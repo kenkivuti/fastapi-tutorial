@@ -1,13 +1,12 @@
 from pathlib import Path
 import os
 import shutil
-from fastapi import FastAPI, File, HTTPException, Depends, UploadFile, Request
-from datetime import timedelta
+from uuid import uuid4
+from fastapi import FastAPI, File, Form, HTTPException, Depends, UploadFile, Request
 from fastapi.responses import FileResponse
-from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import Tag
-from requests import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 import uvicorn
 from dbservice import SessionLocal, User, Product, Sale
 from models import *
@@ -18,34 +17,25 @@ from fastapi.staticfiles import StaticFiles
 
 sentry_sdk.init(
     dsn="https://1587107fcf7b86ca551377cc978a8e9f@o4507324311142400.ingest.us.sentry.io/4507324313239552",
-    # Set traces_sample_rate to 1.0 to capture 100%
-    # of transactions for performance monitoring.
     traces_sample_rate=1.0,
-    # Set profiles_sample_rate to 1.0 to profile 100%
-    # of sampled transactions.
-    # We recommend adjusting this value in production.
     profiles_sample_rate=1.0,
 )
-
 
 app = FastAPI()
 
 UPLOAD_DIRECTORY = "static/images"
-# create directory
 os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
-
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 origins = [
-    # "http://127.0.0.1:8000",
-    # "http://localhost:8000",
-    # "http://46.101.217.191:8000"
-    "*"
-
-]
-
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://46.101.217.191:8000"  
+           
+           
+           
+           ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -53,14 +43,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type"],
 )
-db = SessionLocal()
 
+db = SessionLocal()
 
 @app.post("/register", response_model=UserOut)
 def register_user(user: UserRegister):
     if db.query(User).filter(User.username == user.username).first():
-        raise HTTPException(
-            status_code=400, detail="Username already registered")
+        raise HTTPException(status_code=400, detail="Username already registered")
     password = pwd_context.hash(user.password)
     db_user = User(username=user.username, email=user.email, password=password)
     db.add(db_user)
@@ -68,7 +57,6 @@ def register_user(user: UserRegister):
     db.refresh(db_user)
     db.close()
     return db_user
-
 
 @app.post("/login")
 async def login(form_data: UserLogin):
@@ -85,21 +73,34 @@ async def login(form_data: UserLogin):
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-
 @app.get("/users")
 def get_all_users():
     users = db.query(User).all()
     db.close()
     return users
 
-    #  for products
-
-
-
 @app.post("/products")
-def create_product(product: ProductCreate, current_user: User = Depends(get_current_user)):
+def create_product(
+    name: str = Form(...),
+    price: float = Form(...),
+    quantity: int = Form(...),
+    product_image: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    # Save the image to a directory
+    image_filename = f"{uuid4()}_{product_image.filename}"
+    image_path = os.path.join("static/images", image_filename)
+    with open(image_path, "wb") as image_file:
+        image_file.write(product_image.file.read())
 
-    db_product = Product(**product.model_dump(), user_id=current_user.id)
+    # Create and save the product to the database
+    db_product = Product(
+        name=name,
+        price=price,
+        quantity=quantity,
+        product_image=image_filename,
+        user_id=current_user.id
+    )
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
@@ -107,31 +108,28 @@ def create_product(product: ProductCreate, current_user: User = Depends(get_curr
 
     return db_product
 
-
-
-@app.get("/products", tags=["Products"])
-def get_products(request: Request,  current_user: User = Depends(get_current_user)):
-    products = db.query(Product).filter(Product.user_id == current_user.id).all()
-    
-    # Construct base URL from request
-    base_url = str(request.base_url).rstrip('/')
-
-    # Append image URLs to the product data
-    products_with_images = [
-        {
-            "id": product.id,
-            "name": product.name,
-            "price": product.price,
-            "quantity": product.quantity,
-            "user_id": product.user_id,
-            "product_image": f"{base_url}/static/images/{product.product_image}" if product.product_image else None
-        } for product in products
-    ]
-
-    return products_with_images
-
-
-
+@app.get('/products', response_model=list[ProductModel])
+def fetch_products(request: Request):
+    try:
+        products = db.query(Product).all()
+        print("products.......", products)
+        products_with_images = []
+        for product in products:
+            image_filename = product.product_image  # assuming product_image is the filename in the database
+            base_url = str(request.base_url)
+            image_url = f"{base_url.rstrip('/')}/static/images/{image_filename}"
+            print("Image URL:", image_url)
+            products_with_images.append(ProductModel(
+                id=product.id,
+                name=product.name,
+                quantity=product.quantity,
+                price=product.price,
+                product_image=image_url  # matching the field name expected by your React component
+            ))
+        return products_with_images
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/products/{pid}")
 async def update_item(pid: int, product: ProductUpdate, response_model=Product):
@@ -139,32 +137,24 @@ async def update_item(pid: int, product: ProductUpdate, response_model=Product):
     if not prod:
         raise HTTPException(status_code=404, detail="product does not exist")
 
-    if not prod.name == product.name and product.name != None:
+    if product.name is not None:
         prod.name = product.name
-
-    if not prod.price == product.price and product.price != None:
+    if product.price is not None:
         prod.price = product.price
-
-    if not prod.quantity == product.quantity and product.quantity != None:
+    if product.quantity is not None:
         prod.quantity = product.quantity
     db.commit()
-
     prod = db.query(Product).filter(Product.id == pid).first()
     return prod
-
-
-#     for sales
 
 @app.get("/sales")
 def get_sales(current_user: User = Depends(get_current_user)):
     try:
-        sales = db.query(Sale).filter(
-            Sale.user_id == current_user.id).all()
+        sales = db.query(Sale).filter(Sale.user_id == current_user.id).all()
         db.close()
         return sales
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/sales")
 def create_sales(sale: SalesCreate, current_user: User = Depends(get_current_user)):
@@ -177,47 +167,32 @@ def create_sales(sale: SalesCreate, current_user: User = Depends(get_current_use
     except Exception as e:
         db.rollback()
         db.close()
-        # Raise HTTPException with 422 status code and error message
         raise HTTPException(status_code=422, detail=str(e))
-
-    # dashboard
-
 
 @app.get("/dashboard")
 def dashboard(current_user: User = Depends(get_current_user)):
     try:
         sales_per_day = db.query(
-            # extracts date from created at
             func.date(Sale.created_at).label('date'),
-            # calculate the total number of sales per day
             func.sum(Sale.stock_quantity * Product.price).label('total_sales')
         ).join(Product).group_by(
             func.date(Sale.created_at)
-        ).filter( Sale.user_id == current_user.id).all()
+        ).filter(Sale.user_id == current_user.id).all()
 
-        #  to JSON format
+        sales_data = [{'date': str(day), 'total_sales': sales} for day, sales in sales_per_day]
 
-        sales_data = [{'date': str(day), 'total_sales': sales}
-                      for day, sales in sales_per_day]
-    # Query sales per product for bar graph
         sales_per_product = db.query(
             Product.name,
             func.sum(Sale.stock_quantity*Product.price).label('sales_product')
         ).join(Sale).group_by(
             Product.name
-        ).filter( Sale.user_id == current_user.id).all()
+        ).filter(Sale.user_id == current_user.id).all()
 
-        #  JSON format
+        salesproduct_data = [{'name': name, 'sales_product': sales_product} for name, sales_product in sales_per_product]
 
-        salesproduct_data = [{'name': name, 'sales_product': sales_product}
-                             for name, sales_product in sales_per_product]
-
-        return ({'sales_data': sales_data, 'salesproduct_data': salesproduct_data})
+        return {'sales_data': sales_data, 'salesproduct_data': salesproduct_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 @app.post("/upload-image/")
 async def upload_image(file: UploadFile = File(...)):
@@ -229,14 +204,12 @@ async def upload_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error saving file: {e}")
     return {"filename": file.filename}
 
-
-@app.get("/images/{filename}")
+@app.get("/images/{filename}", tags=["Images"])
 async def get_image(filename: str):
     file_path = Path(UPLOAD_DIRECTORY) / filename
     if file_path.exists():
         return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="Image not found")
-
 
 @app.put("/images/{filename}")
 async def update_image(filename: str, new_filename: str = None, file: UploadFile = File(...)):
@@ -244,17 +217,14 @@ async def update_image(filename: str, new_filename: str = None, file: UploadFile
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # If a new filename is provided, use it; otherwise, keep the old filename
     new_file_path = Path(UPLOAD_DIRECTORY) / (new_filename if new_filename else filename)
     
     if new_file_path != file_path and new_file_path.exists():
         raise HTTPException(status_code=400, detail="New filename already exists")
 
-    # Save the new file
     with new_file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # Remove the old file if the filename has changed
     if new_file_path != file_path:
         file_path.unlink()
 

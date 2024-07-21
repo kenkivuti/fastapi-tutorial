@@ -6,6 +6,7 @@ from datetime import datetime
 
 
 class ProductModel(BaseModel):
+    id: int 
     name: str
     price: int
     quantity:int 
@@ -13,7 +14,7 @@ class ProductModel(BaseModel):
     
     
 class ProductBase(ProductModel):
-    id: int 
+
     user_id: int 
 
 
