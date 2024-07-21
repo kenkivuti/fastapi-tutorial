@@ -19,6 +19,7 @@ class Product(Base):
     price = Column(Integer, nullable=False)
     quantity=Column(Integer,default=0)
     user_id=Column(Integer,ForeignKey("users.id"),nullable=True)
+    product_image = Column(String)
 # relationship
     sales= relationship("Sale",back_populates='products')
     # username=Column(String,ForeignKey('users.username'),nullable=True)

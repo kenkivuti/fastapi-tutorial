@@ -1,6 +1,12 @@
-from fastapi import FastAPI, HTTPException, Depends
+from pathlib import Path
+import os
+import shutil
+from fastapi import FastAPI, File, HTTPException, Depends, UploadFile, Request
 from datetime import timedelta
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import Tag
+from requests import Session
 from sqlalchemy import func
 import uvicorn
 from dbservice import SessionLocal, User, Product, Sale
@@ -8,6 +14,7 @@ from models import *
 from security import *
 from fastapi.middleware.cors import CORSMiddleware
 import sentry_sdk
+from fastapi.staticfiles import StaticFiles
 
 sentry_sdk.init(
     dsn="https://1587107fcf7b86ca551377cc978a8e9f@o4507324311142400.ingest.us.sentry.io/4507324313239552",
@@ -23,13 +30,19 @@ sentry_sdk.init(
 
 app = FastAPI()
 
+UPLOAD_DIRECTORY = "static/images"
+# create directory
+os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
+
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 origins = [
-    "http://127.0.0.1:8000",
-    "http://localhost:8000",
-    "http://46.101.217.191:8000"
-    
-
+    # "http://127.0.0.1:8000",
+    # "http://localhost:8000",
+    # "http://46.101.217.191:8000"
+    "*"
 
 ]
 
@@ -82,13 +95,6 @@ def get_all_users():
     #  for products
 
 
-@app.get("/products")
-def get_products(current_user: User = Depends(get_current_user)):
-    products = db.query(Product).filter(
-        Product.user_id == current_user.id).all()
-    db.close()
-    return products
-
 
 @app.post("/products")
 def create_product(product: ProductCreate, current_user: User = Depends(get_current_user)):
@@ -100,6 +106,31 @@ def create_product(product: ProductCreate, current_user: User = Depends(get_curr
     db.close()
 
     return db_product
+
+
+
+@app.get("/products", tags=["Products"])
+def get_products(request: Request,  current_user: User = Depends(get_current_user)):
+    products = db.query(Product).filter(Product.user_id == current_user.id).all()
+    
+    # Construct base URL from request
+    base_url = str(request.base_url).rstrip('/')
+
+    # Append image URLs to the product data
+    products_with_images = [
+        {
+            "id": product.id,
+            "name": product.name,
+            "price": product.price,
+            "quantity": product.quantity,
+            "user_id": product.user_id,
+            "product_image": f"{base_url}/static/images/{product.product_image}" if product.product_image else None
+        } for product in products
+    ]
+
+    return products_with_images
+
+
 
 
 @app.put("/products/{pid}")
@@ -114,8 +145,8 @@ async def update_item(pid: int, product: ProductUpdate, response_model=Product):
     if not prod.price == product.price and product.price != None:
         prod.price = product.price
 
-    if not prod.stock_quantity == product.stock_quantity and product.stock_quantity != None:
-        prod.stock_quantity = product.stock_quantity
+    if not prod.quantity == product.quantity and product.quantity != None:
+        prod.quantity = product.quantity
     db.commit()
 
     prod = db.query(Product).filter(Product.id == pid).first()
@@ -184,6 +215,50 @@ def dashboard(current_user: User = Depends(get_current_user)):
         return ({'sales_data': sales_data, 'salesproduct_data': salesproduct_data})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+@app.post("/upload-image/")
+async def upload_image(file: UploadFile = File(...)):
+    file_path = Path(UPLOAD_DIRECTORY) / file.filename
+    try:
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving file: {e}")
+    return {"filename": file.filename}
+
+
+@app.get("/images/{filename}")
+async def get_image(filename: str):
+    file_path = Path(UPLOAD_DIRECTORY) / filename
+    if file_path.exists():
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+@app.put("/images/{filename}")
+async def update_image(filename: str, new_filename: str = None, file: UploadFile = File(...)):
+    file_path = Path(UPLOAD_DIRECTORY) / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # If a new filename is provided, use it; otherwise, keep the old filename
+    new_file_path = Path(UPLOAD_DIRECTORY) / (new_filename if new_filename else filename)
+    
+    if new_file_path != file_path and new_file_path.exists():
+        raise HTTPException(status_code=400, detail="New filename already exists")
+
+    # Save the new file
+    with new_file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Remove the old file if the filename has changed
+    if new_file_path != file_path:
+        file_path.unlink()
+
+    return {"filename": new_file_path.name, "message": "Image updated successfully"}
 
 # if __name__ == "__main__":
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
