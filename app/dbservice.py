@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
 
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./fastapi database.db"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:Kenkivuti254@172.17.0.1:5432/fastapidatabase"
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
